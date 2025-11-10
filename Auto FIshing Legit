@@ -1,1 +1,86 @@
+-- Deklarasi service dan variabel utama (tidak diubah)
+local workspace = workspace
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local hrp = character:WaitForChild("HumanoidRootPart")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local LocalPlayer = player -- alias supaya sama dengan LocalPlayer
 
+local FishingController = require(ReplicatedStorage.Controllers.FishingController)
+local AutoFishingController = require(ReplicatedStorage.Controllers.AutoFishingController)
+local Replion = require(ReplicatedStorage.Packages.Replion)
+
+local AutoFishState = {
+	IsActive = false,
+	MinigameActive = false
+}
+
+local ClickSpeed = 0.05
+
+local function performClick()
+	FishingController:RequestFishingMinigameClick()
+	task.wait(ClickSpeed + math.random() * ClickSpeed)
+end
+
+-- Override state changed supaya selalu aktif
+local originalAutoFishingStateChanged = AutoFishingController.AutoFishingStateChanged
+AutoFishingController.AutoFishingStateChanged = function(...)
+	return originalAutoFishingStateChanged(true)
+end
+
+local function ensureServerAutoFishingOn()
+	local replionData = Replion.Client:WaitReplion("Data")
+	local currentAutoFishingState = replionData:GetExpect("AutoFishing")
+
+	if not currentAutoFishingState then
+		local Net = require(ReplicatedStorage.Packages.Net)
+		local UpdateAutoFishingRemote = Net:RemoteFunction("UpdateAutoFishingState")
+		pcall(function()
+			UpdateAutoFishingRemote:InvokeServer(true)
+		end)
+	end
+end
+
+local originalRodStarted = FishingController.FishingRodStarted
+local originalFishingStopped = FishingController.FishingStopped
+local clickThread = nil
+
+FishingController.FishingRodStarted = function(self, ...)
+	originalRodStarted(self, ...)
+	if AutoFishState.IsActive and not AutoFishState.MinigameActive then
+		AutoFishState.MinigameActive = true
+		if clickThread then task.cancel(clickThread) end
+		clickThread = task.spawn(function()
+			while AutoFishState.IsActive and AutoFishState.MinigameActive do
+				performClick()
+			end
+		end)
+	end
+end
+
+FishingController.FishingStopped = function(self, ...)
+	originalFishingStopped(self, ...)
+	if AutoFishState.MinigameActive then
+		AutoFishState.MinigameActive = false
+		task.wait(1)
+		ensureServerAutoFishingOn()
+	end
+end
+
+local function ToggleAutoClick(shouldActivate)
+	AutoFishState.IsActive = shouldActivate
+	if shouldActivate then
+		ensureServerAutoFishingOn()
+	else
+		if clickThread then
+			task.cancel(clickThread)
+			clickThread = nil
+		end
+		AutoFishState.MinigameActive = false
+	end
+end
+
+-- Contoh panggil ToggleAutoClick(true) untuk aktifkan auto fishing
+-- ToggleAutoClick(false) untuk matikan
